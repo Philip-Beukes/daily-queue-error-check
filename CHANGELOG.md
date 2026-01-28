@@ -1,5 +1,66 @@
 # Changelog
 
+## [1.3.0] - 2026-01-28
+
+### Added
+- **File Output Support**
+  - Added `--output-file FILE` / `-o FILE` option
+  - Write complete reports to files for later analysis
+  - Support for dated filenames for automated reporting
+  - Console output for progress when using file output with verbose mode
+
+- **Process-Level Error Analysis**
+  - Automatic analysis of errors grouped by process name
+  - Shows error count per process
+  - Lists affected queue IDs per process
+  - Sample error messages for each process
+  - Summary statistics (total errors, unique processes, averages)
+  - Sorted by error count to identify most problematic processes
+
+- **Enhanced Stack Traces**
+  - Removed 500 character limit on stack traces
+  - Now displays complete stack traces with all details
+  - Better debugging with full error context
+
+### Changed
+- `JobHistoryAnalyzer` now maintains state for process analysis
+- Changed from static methods to instance methods for analyzer
+- Enhanced `getSystemLog` API call with proper filtering:
+  - Added `messageCode` filter for errors only
+  - Added `excludeLongText: false` to ensure full stack traces
+  - Added `includeProcessName: true` for process information
+- Updated test scripts to show process analysis
+
+### Documentation
+- Added `FILE_OUTPUT_AND_ANALYSIS.md` - Complete guide to file output and process analysis
+- Added `API_CALLS.md` - Detailed API documentation
+- Updated README.md with file output and process analysis examples
+- Updated CHANGELOG.md with version history
+
+## [1.2.0] - 2026-01-28
+
+### Added
+- **Detailed System Log Fetching**
+  - Added `--fetch-details` flag to fetch detailed logs for each queue ID
+  - Added `--detail-limit N` to limit number of queue IDs to fetch details for
+  - New API method `get_system_log()` to fetch detailed error logs
+  - Detailed report showing log entries, stack traces, and process names
+  - Automatic sorting by error count (most problematic queues first)
+  - Progress tracking in verbose mode
+  - Error handling for failed detail fetches
+
+### Changed
+- Refactored API calling logic into `_make_api_call()` method
+- Enhanced `JobHistoryAnalyzer` with `extract_log_summary()` method
+- Enhanced `ReportGenerator` with detailed log formatting methods
+- Updated README.md with detailed fetching examples
+- Updated help text with new options
+
+### Documentation
+- Added `DETAILED_LOGS.md` - Comprehensive detailed log fetching guide
+- Added `test_with_details.py` - Test script demonstrating detailed fetching
+- Updated CHANGELOG.md with version history
+
 ## [1.1.0] - 2026-01-27
 
 ### Added

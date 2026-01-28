@@ -98,6 +98,44 @@ python get_error_jobs.py
 python get_error_jobs.py --date 2026-01-15
 ```
 
+### Fetch Detailed System Logs
+
+Get detailed error logs for each queue ID:
+
+```bash
+# Fetch details for all queue IDs
+python get_error_jobs.py --fetch-details
+
+# Limit to top 5 queue IDs (by error count)
+python get_error_jobs.py --fetch-details --detail-limit 5
+```
+
+This will:
+1. First show the summary report (queue ID counts)
+2. Then fetch detailed system logs for each queue ID
+3. Display error messages, stack traces, and process names
+4. Generate analysis summary grouped by process
+
+### Write Report to File
+
+Save the complete report to a file:
+
+```bash
+# Write to file instead of console
+python get_error_jobs.py --fetch-details --detail-limit 10 -o error_report.txt
+
+# With date in filename (PowerShell)
+python get_error_jobs.py --fetch-details -o "report_$(Get-Date -Format 'yyyyMMdd').txt"
+
+# With date in filename (Linux/Mac)
+python get_error_jobs.py --fetch-details -o "report_$(date +%Y%m%d).txt"
+```
+
+The file will contain:
+- Queue ID summary
+- Detailed error logs with full stack traces
+- **Process analysis summary** (errors grouped by process name)
+
 ### Enable Verbose Output (for debugging)
 
 ```bash
@@ -188,6 +226,10 @@ optional arguments:
   --verbose, -v        Enable verbose output for debugging
   --dry-run            Test configuration without making API call
   --no-verify-ssl      Disable SSL certificate verification (for self-signed certs)
+  --fetch-details      Fetch detailed system logs for each queue ID
+  --detail-limit N     Limit number of queue IDs to fetch details for (default: all)
+  --output-file FILE, -o FILE
+                       Write output to file instead of console
 ```
 
 ## Error Handling
