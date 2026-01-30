@@ -50,6 +50,22 @@ Then just run:
 python get_error_jobs.py
 ```
 
+### Optional: PostgreSQL Ingestion
+
+Enable database writes by setting the PostgreSQL env vars and `SBS_DB_ENABLED=true`.
+
+```bash
+SBS_DB_ENABLED=true
+PGHOST=localhost
+PGPORT=5432
+PGDATABASE=sbs_errors
+PGUSER=postgres
+PGPASSWORD=your-password
+PGSSLMODE=prefer
+```
+
+The schema is defined in `db/schema.sql`. Apply it before running ingestion.
+
 ### Option 1b: Manual Environment Variables
 
 You can also set environment variables manually:

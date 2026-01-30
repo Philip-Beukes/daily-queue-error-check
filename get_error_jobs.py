@@ -26,6 +26,11 @@ except ImportError:
     print("ERROR: 'python-dotenv' library not found. Please install: pip install python-dotenv")
     sys.exit(1)
 
+try:
+    from db.pg_client import PGClient
+except Exception:
+    PGClient = None
+
 
 class SBSJobHistoryClient:
     """Client for querying SBS job history API"""
@@ -312,6 +317,36 @@ class JobHistoryAnalyzer:
         return set(re.findall(pattern, long_text))
 
     @staticmethod
+    def _extract_extract_gl_transaction_ids(long_text: str) -> Set[str]:
+        """
+        Extract Extract GL transaction IDs from stack trace text.
+
+        Attempts to match common Extract GL execute call patterns.
+        """
+        if not long_text:
+            return set()
+
+        patterns = [
+            r"MFTrans.*Extract.*\.execute with arguments\s+(\d+)\s*\(java\.lang\.Long->java\.lang\.Long\)",
+            r"Extract.*\.execute with arguments\s+(\d+)\s*\(java\.lang\.Long->java\.lang\.Long\)",
+            r"CMInterfaceExtractGLFileQueued\.process with arguments\s+([^\r\n]+)"
+        ]
+        tx_ids: Set[str] = set()
+        for pattern in patterns:
+            matches = re.findall(pattern, long_text)
+            if pattern.endswith("arguments\\s+([^\\r\\n]+)"):
+                for args_text in matches:
+                    long_args = re.findall(
+                        r"(\d+)\s*\(java\.lang\.Long->java\.lang\.Long\)",
+                        args_text
+                    )
+                    if long_args:
+                        tx_ids.add(long_args[-1])
+            else:
+                tx_ids.update(matches)
+        return tx_ids
+
+    @staticmethod
     def _extract_error_causes(long_text: str) -> List[str]:
         """
         Extract root cause messages from stack trace text.
@@ -425,6 +460,42 @@ class JobHistoryAnalyzer:
                     causes.append(f"NumberFormatException - {match.group(1).strip()}")
         if long_text and "NullPointerException" in long_text and tx_id:
             causes.append(f"NullPointerException for Transaction ID {tx_id}")
+        return causes
+
+    @staticmethod
+    def _extract_extract_gl_causes(message: str, long_text: str, tx_id: Optional[str]) -> List[str]:
+        """
+        Extract Extract GL causes from error message/stack trace.
+
+        Includes:
+        - Message line (if present)
+        - ORA-01555 line (if present)
+        - NullPointerException for Transaction ID <tx_id> (if present)
+        """
+        causes = []
+        if message:
+            causes.append(message.strip())
+        if long_text:
+            ora_match = re.search(r"ORA-01555:[^\r\n]+", long_text)
+            if ora_match:
+                causes.append(ora_match.group(0).strip())
+        if long_text and "NullPointerException" in long_text and tx_id:
+            causes.append(f"NullPointerException for Transaction ID {tx_id}")
+        return causes
+
+    @staticmethod
+    def _extract_daily_transactions_causes(message: str) -> List[str]:
+        """
+        Extract Daily Transactions Extract causes from error message text.
+
+        Includes line(s) containing BRA- error codes from the message.
+        """
+        causes = []
+        if not message:
+            return causes
+        for line in message.splitlines():
+            if "BRA-" in line:
+                causes.append(line.strip())
         return causes
     
     @staticmethod
@@ -547,7 +618,8 @@ class JobHistoryAnalyzer:
                 'SMP Rebalance Process',
                 'Cash Receipt Creation for Expectations',
                 'Upload Settlement Date',
-                'Upload FinSwitch Transaction Confirmation'
+                'Upload FinSwitch Transaction Confirmation',
+                'Extract GL'
             ):
                 self.process_accounts[process_name].update(
                     self._extract_account_ids(
@@ -699,6 +771,34 @@ class JobHistoryAnalyzer:
                 for cause in causes:
                     self.process_error_causes[process_name][cause] += 1
                 for cause in fin_causes:
+                    self.process_error_causes[process_name][cause] += 1
+            if process_name == 'Extract GL':
+                tx_ids = self._extract_extract_gl_transaction_ids(error_info['long_text'])
+                causes = self._extract_error_causes(error_info['long_text'])
+                self.process_transactions[process_name].update(tx_ids)
+                for tx_id in tx_ids:
+                    tx_entry = self.process_transaction_errors[process_name].setdefault(
+                        tx_id, {'count': 0, 'samples': [], 'causes': Counter()}
+                    )
+                    tx_entry['count'] += 1
+                    if len(tx_entry['samples']) < 3:
+                        tx_entry['samples'].append({
+                            'message': error_info['message'],
+                            'queue_id': queue_id,
+                            'created_date': error_info['created_date']
+                        })
+                    for cause in causes:
+                        tx_entry['causes'][cause] += 1
+                    for cause in self._extract_extract_gl_causes(
+                        error_info['message'],
+                        error_info['long_text'],
+                        tx_id
+                    ):
+                        tx_entry['causes'][cause] += 1
+                for cause in causes:
+                    self.process_error_causes[process_name][cause] += 1
+            if process_name == 'Daily Transactions Extract':
+                for cause in self._extract_daily_transactions_causes(error_info['message']):
                     self.process_error_causes[process_name][cause] += 1
             
             if error_info['process_name']:
@@ -895,7 +995,9 @@ class ReportGenerator:
                 'SMP Rebalance Process',
                 'Cash Receipt Creation for Expectations',
                 'Upload Settlement Date',
-                'Upload FinSwitch Transaction Confirmation'
+                'Upload FinSwitch Transaction Confirmation',
+                'Extract GL',
+                'Daily Transactions Extract'
             ) and data.get('error_causes'):
                 print(f"{'Top Error Causes:':<20}")
                 for cause, count in data['error_causes'].most_common(5):
@@ -1149,7 +1251,15 @@ def write_transaction_report(
                 if not process_info:
                     out.write("No entries found for this process on this date.\n\n")
                 else:
-                    out.write("No transaction IDs found for this process.\n\n")
+                    out.write("No transaction IDs found for this process.\n")
+                    if process_info.get('sample_errors'):
+                        out.write("Sample Errors:\n")
+                        for idx, sample in enumerate(process_info['sample_errors'], 1):
+                            out.write(
+                                f"  {idx}. {sample['message']}\n"
+                                f"     Queue ID: {sample['queue_id']}, Date: {sample['created_date']}\n"
+                            )
+                        out.write("\n")
 
         print(f"  - {output_path}", file=sys.stderr)
 
@@ -1198,6 +1308,12 @@ def main():
         print(f"  Language: {language}", file=sys.stderr)
         print(f"  Database ID: {db_id}", file=sys.stderr)
         print(f"  SSL Verification: {'Enabled' if verify_ssl else 'DISABLED'}", file=sys.stderr)
+
+    db_enabled = os.environ.get('SBS_DB_ENABLED', '').lower() in ('true', '1', 'yes')
+    if db_enabled and PGClient is None:
+        print("ERROR: Database enabled but PGClient is unavailable. Install psycopg2-binary and ensure db/pg_client.py is present.", file=sys.stderr)
+        sys.exit(1)
+    db_client = PGClient() if db_enabled else None
     
     # Dry run mode - just validate configuration
     if args.dry_run:
@@ -1254,6 +1370,11 @@ def main():
     # Analyze results
     analyzer = JobHistoryAnalyzer()
     queue_counts = analyzer.count_queue_ids(response)
+
+    run_id = None
+    if db_enabled:
+        run_id = db_client.insert_run(base_url, query_date)
+        db_client.insert_queue_stats(run_id, list(queue_counts.items()))
     
     # Generate report
     report_gen = ReportGenerator()
@@ -1265,6 +1386,7 @@ def main():
     
     # Fetch detailed logs if requested
     if args.fetch_details and queue_counts:
+        log_rows = []
         # Get list of queue IDs sorted by count (descending)
         sorted_queue_ids = [qid for qid, count in queue_counts.most_common()]
         
@@ -1294,6 +1416,19 @@ def main():
                 
                 # Display details
                 report_gen.print_system_log_details(queue_id, log_summary)
+
+                if db_enabled and run_id:
+                    for entry in log_summary.get('errors', []):
+                        log_rows.append((
+                            entry.get('log_id'),
+                            entry.get('queue_id'),
+                            entry.get('process_name'),
+                            entry.get('message_code', {}).get('code'),
+                            entry.get('message'),
+                            entry.get('created_date'),
+                            entry.get('created_by'),
+                            entry.get('long_text'),
+                        ))
                 
             except Exception as e:
                 print(f"\nWARNING: Failed to fetch details for queue ID {queue_id}: {e}", 
@@ -1307,6 +1442,39 @@ def main():
         # Generate and display process summary
         process_summary = analyzer.get_process_summary()
         report_gen.print_process_summary(process_summary)
+
+        if db_enabled and run_id:
+            db_client.insert_log_entries(run_id, log_rows)
+            db_client.insert_process_stats(
+                run_id,
+                [(name, data['error_count']) for name, data in process_summary.items()]
+            )
+            db_client.insert_process_queue_ids(
+                run_id,
+                [(name, qid) for name, data in process_summary.items() for qid in data.get('queue_ids', [])]
+            )
+            db_client.insert_process_accounts(
+                run_id,
+                [(name, acct) for name, data in process_summary.items() for acct in data.get('account_ids', [])]
+            )
+            db_client.insert_process_error_causes(
+                run_id,
+                [(name, cause, count) for name, data in process_summary.items()
+                 for cause, count in data.get('error_causes', {}).items()]
+            )
+
+            transaction_summary = analyzer.get_transaction_summary()
+            db_client.insert_transaction_errors(
+                run_id,
+                [(name, int(tx_id), data['count']) for name, tx_map in transaction_summary.items()
+                 for tx_id, data in tx_map.items()]
+            )
+            db_client.insert_transaction_error_causes(
+                run_id,
+                [(name, int(tx_id), cause, count) for name, tx_map in transaction_summary.items()
+                 for tx_id, data in tx_map.items()
+                 for cause, count in data.get('causes', {}).items()]
+            )
     
     # Close output file if used
     if output_file:
@@ -1324,7 +1492,9 @@ def main():
                     "Apply Prices",
                     "SMP Rebalance Process",
                     "Upload Settlement Date",
-                    "Upload FinSwitch Transaction Confirmation"
+                    "Upload FinSwitch Transaction Confirmation",
+                    "Extract GL",
+                    "Daily Transactions Extract"
                 ]
             )
 
